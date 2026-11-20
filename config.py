@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from typing import Tuple
 
 
 @dataclass(frozen=True)
@@ -11,10 +12,18 @@ class Settings:
     max_price_usd: float = 74.9
     require_free_shipping: bool = True
     amazon_partner_tag: str = ""
+    feed_urls: Tuple[str, ...] = ()
     request_timeout_sec: int = 20
     max_items_per_run: int = 5
     sleep_between_posts_sec: float = 1.5
     dry_run: bool = False
+
+
+def _parse_feed_urls(raw: str) -> Tuple[str, ...]:
+    if not raw:
+        return ()
+    parts = [u.strip() for u in raw.replace("\n", ",").split(",")]
+    return tuple(u for u in parts if u)
 
 
 def load_settings() -> Settings:
@@ -48,5 +57,6 @@ def load_settings() -> Settings:
         max_price_usd=max_price_usd,
         require_free_shipping=require_free_shipping,
         amazon_partner_tag=os.getenv("AMAZON_PARTNER_TAG", "").strip(),
+        feed_urls=_parse_feed_urls(os.getenv("AMAZON_FEED_URLS", "")),
         dry_run=dry_run,
     )
