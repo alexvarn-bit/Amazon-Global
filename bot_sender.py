@@ -15,6 +15,35 @@ from filter_deals import (
     is_excluded_category,
 )
 
+_MAX_CAPTION_LEN = 1024
+
+
+def _post_telegram_json(
+    bot_token: str,
+    method: str,
+    payload: dict,
+    timeout_sec: int = 20,
+) -> bool:
+    api_url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        api_url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return bool(body.get("ok"))
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        print(f"Telegram {method} HTTP error {exc.code}: {err_body}", file=sys.stderr)
+        return False
+    except Exception as exc:
+        print(f"Telegram {method} error: {exc}", file=sys.stderr)
+        return False
+
 
 def send_telegram_message(
     bot_token: str,
@@ -25,32 +54,62 @@ def send_telegram_message(
     if not bot_token or not channel_id:
         raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID must be set")
 
-    api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": channel_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        api_url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    return _post_telegram_json(bot_token, "sendMessage", payload, timeout_sec=timeout_sec)
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            return bool(body.get("ok"))
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
-        print(f"Telegram HTTP error {exc.code}: {err_body}", file=sys.stderr)
-        return False
-    except Exception as exc:
-        print(f"Telegram send error: {exc}", file=sys.stderr)
-        return False
+
+def send_telegram_photo(
+    bot_token: str,
+    channel_id: str,
+    photo_url: str,
+    caption: str,
+    timeout_sec: int = 20,
+) -> bool:
+    if not bot_token or not channel_id:
+        raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID must be set")
+
+    safe_caption = caption
+    if len(safe_caption) > _MAX_CAPTION_LEN:
+        safe_caption = safe_caption[: _MAX_CAPTION_LEN - 1] + "…"
+
+    payload = {
+        "chat_id": channel_id,
+        "photo": photo_url,
+        "caption": safe_caption,
+        "parse_mode": "HTML",
+    }
+    return _post_telegram_json(bot_token, "sendPhoto", payload, timeout_sec=timeout_sec)
+
+
+def _send_deal_post(
+    settings: Settings,
+    item: DealItem,
+    post_text: str,
+) -> bool:
+    image_url = (getattr(item, "image_url", "") or "").strip()
+    if image_url:
+        sent_photo = send_telegram_photo(
+            bot_token=settings.bot_token,
+            channel_id=settings.channel_id,
+            photo_url=image_url,
+            caption=post_text,
+            timeout_sec=settings.request_timeout_sec,
+        )
+        if sent_photo:
+            return True
+        print(f"Fallback to text message for: {item.title}")
+
+    return send_telegram_message(
+        bot_token=settings.bot_token,
+        channel_id=settings.channel_id,
+        text=post_text,
+        timeout_sec=settings.request_timeout_sec,
+    )
 
 
 def _log_filter_diagnostics(
@@ -130,12 +189,7 @@ def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool
             partner_tag=settings.amazon_partner_tag,
             free_shipping_threshold_usd=settings.free_shipping_threshold_usd,
         )
-        ok = send_telegram_message(
-            bot_token=settings.bot_token,
-            channel_id=settings.channel_id,
-            text=post_text,
-            timeout_sec=settings.request_timeout_sec,
-        )
+        ok = _send_deal_post(settings=settings, item=item, post_text=post_text)
         if ok:
             sent_count += 1
             print(f"Sent deal: {item.title}")
