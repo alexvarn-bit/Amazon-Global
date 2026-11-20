@@ -12,10 +12,36 @@ from filter_deals import DealItem
 ASIN_PATTERN = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})", re.IGNORECASE)
 PRICE_PATTERN = re.compile(r"\$\s*(\d+(?:\.\d{1,2})?)")
 
+FREE_SHIPPING_MARKERS = (
+    "free shipping",
+    "free international shipping",
+    "free s&h",
+    "free delivery",
+    "бесплатная доставка",
+)
+PAID_OR_NO_SHIPPING_MARKERS = (
+    "no shipping",
+    "shipping extra",
+    "plus shipping",
+    "in-store only",
+    "pickup only",
+)
+
 
 def extract_asin(url: str) -> str:
     match = ASIN_PATTERN.search(url or "")
     return match.group(1).upper() if match else ""
+
+
+def _is_amazon_url_or_text(url: str, description: str = "") -> bool:
+    try:
+        host = (urlparse((url or "").strip()).hostname or "").lower()
+    except Exception:
+        host = ""
+    if "amazon." in host or "amzn." in host:
+        return True
+    combined = f"{url} {description}".lower()
+    return "amazon.com" in combined or "amzn.to" in combined or "/dp/" in combined
 
 
 def normalize_amazon_url(url: str, asin: str = "") -> str:
@@ -57,6 +83,12 @@ def _fetch_text(url: str, timeout_sec: int = 20) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+def _detect_free_shipping(text_lower: str) -> bool:
+    if any(bad in text_lower for bad in PAID_OR_NO_SHIPPING_MARKERS):
+        return False
+    return any(marker in text_lower for marker in FREE_SHIPPING_MARKERS)
+
+
 def parse_rss_deals(xml_text: str) -> List[DealItem]:
     deals: List[DealItem] = []
     root = ET.fromstring(xml_text)
@@ -70,9 +102,11 @@ def parse_rss_deals(xml_text: str) -> List[DealItem]:
             continue
 
         asin = extract_asin(link) or extract_asin(description)
+        if not asin and not _is_amazon_url_or_text(link, description):
+            continue
+
         clean_url = normalize_amazon_url(link, asin)
 
-        # Look for price in title or description
         combined_text = f"{title} {description}"
         price_matches = PRICE_PATTERN.findall(combined_text)
         if not price_matches:
@@ -84,15 +118,7 @@ def parse_rss_deals(xml_text: str) -> List[DealItem]:
 
         current_price = min(prices)
         old_price = max(prices) if len(prices) > 1 and max(prices) > current_price else None
-
-        lower_text = combined_text.lower()
-        # Explicit free shipping check or Amazon qualifying threshold ($49+ to Israel)
-        has_explicit_free = any(
-            phrase in lower_text
-            for phrase in ("free shipping", "free international shipping", "бесплатная доставка")
-        )
-        qualifies_il_free_threshold = current_price >= 49.0 and "no shipping" not in lower_text
-        free_shipping = has_explicit_free or qualifies_il_free_threshold
+        free_shipping = _detect_free_shipping(combined_text.lower())
 
         deals.append(
             DealItem(
@@ -119,6 +145,11 @@ def parse_json_deals(json_text: str) -> List[DealItem]:
         title = str(entry.get("title", "")).strip()
         url = str(entry.get("url", "")).strip()
         asin = str(entry.get("asin", "")).strip().upper() or extract_asin(url)
+        notes = str(entry.get("notes", "")).strip()
+
+        if not asin and not _is_amazon_url_or_text(url, notes):
+            continue
+
         try:
             price_usd = float(entry.get("price_usd", 0))
         except (TypeError, ValueError):
@@ -127,7 +158,6 @@ def parse_json_deals(json_text: str) -> List[DealItem]:
         old_price_raw = entry.get("old_price_usd")
         old_price_usd = float(old_price_raw) if old_price_raw else None
         free_shipping = bool(entry.get("free_shipping", False))
-        notes = str(entry.get("notes", "")).strip()
 
         if title and (url or asin) and price_usd > 0:
             deals.append(
