@@ -65,10 +65,6 @@ def _normalize_input_to_url_and_asin(raw_entry: str) -> tuple[str, str]:
 
 
 def _detect_shipping_from_html(page: str) -> tuple[bool, bool]:
-    """
-    Возвращает (free_shipping, free_shipping_49) на основе текста страницы.
-    Если видна явная платная доставка — возвращает (False, False).
-    """
     if not page:
         return False, False
 
@@ -86,9 +82,6 @@ def _detect_shipping_from_html(page: str) -> tuple[bool, bool]:
 def _scrape_basic_amazon_info(
     url: str, asin: str
 ) -> tuple[str, Optional[float], bool, bool, bool]:
-    """
-    Возвращает (title, price_usd, is_not_found_404, detected_free_shipping, detected_free_shipping_49).
-    """
     fallback_title = f"Amazon item {asin}".strip()
     if not url:
         return fallback_title, None, False, False, False
@@ -187,9 +180,25 @@ def _collect_inputs(cli_items: List[str], from_file: str) -> List[str]:
     return collected
 
 
+def _print_audit(rows: List[dict]) -> None:
+    if not rows:
+        print("deals.json is empty.")
+        return
+    print(f"Total items in deals.json: {len(rows)}")
+    for idx, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            continue
+        asin = str(row.get("asin") or "").strip() or "-"
+        price = row.get("price_usd")
+        fs = bool(row.get("free_shipping", False))
+        fs49 = bool(row.get("free_shipping_49", False))
+        title = str(row.get("title") or "").strip()[:60]
+        print(f"{idx:2d}. [{asin}] ${price} | free={fs} | free49={fs49} | {title}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Добавляет проверенные ссылки или ASIN с Amazon в deals.json"
+        description="Добавляет и обслуживает ссылки или ASIN с Amazon в deals.json"
     )
     parser.add_argument(
         "items",
@@ -229,64 +238,110 @@ def main() -> int:
         default="",
         help="Общая заметка/комментарий для добавляемых позиций",
     )
+    parser.add_argument(
+        "--reset-shipping",
+        action="store_true",
+        help="Сбросить free_shipping и free_shipping_49 в false у всех текущих записей в deals.json",
+    )
+    parser.add_argument(
+        "--remove-unverified",
+        action="store_true",
+        help="Удалить из deals.json записи, у которых free_shipping=false и free_shipping_49=false",
+    )
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Показать текущие записи в deals.json и их флаги доставки",
+    )
     args = parser.parse_args()
 
+    existing_rows = _load_existing_json(args.output)
+    modified = False
+
+    if args.reset_shipping:
+        for row in existing_rows:
+            if isinstance(row, dict):
+                row["free_shipping"] = False
+                row["free_shipping_49"] = False
+        modified = True
+        print(f"Reset shipping flags to False for {len(existing_rows)} item(s) in {args.output}")
+
+    if args.remove_unverified:
+        before_cnt = len(existing_rows)
+        kept: List[dict] = []
+        for row in existing_rows:
+            if not isinstance(row, dict):
+                continue
+            fs = bool(row.get("free_shipping", False))
+            fs49 = bool(row.get("free_shipping_49", False))
+            if fs or fs49:
+                kept.append(row)
+            else:
+                print(f"Removed unverified item [{row.get('asin') or '-'}]: {row.get('title')}")
+        existing_rows = kept
+        modified = True
+        print(f"Removed {before_cnt - len(existing_rows)} unverified item(s); remaining: {len(existing_rows)}")
+
     raw_inputs = _collect_inputs(args.items, args.file)
-    if not raw_inputs:
+    if raw_inputs:
+        seen_keys: Set[str] = set()
+        for row in existing_rows:
+            if isinstance(row, dict):
+                k = (str(row.get("asin") or "") or str(row.get("url") or "")).strip().upper()
+                if k:
+                    seen_keys.add(k)
+
+        added_count = 0
+        for raw in raw_inputs:
+            url, asin = _normalize_input_to_url_and_asin(raw)
+            key = (asin or url).strip().upper()
+            if not key or key in seen_keys:
+                print(f"Skip duplicate or invalid: {raw}")
+                continue
+
+            title, scraped_price, is_404, det_free_ship, det_free_49 = _scrape_basic_amazon_info(url, asin)
+            if is_404:
+                print(f"Skip 404 not found: {url}")
+                continue
+
+            final_price = scraped_price if scraped_price is not None else args.price
+            free_ship_val = bool(args.free_shipping or det_free_ship)
+            free_ship_49_val = bool(args.free_shipping_49 or args.free_shipping or det_free_49)
+
+            new_row = {
+                "title": title,
+                "price_usd": round(float(final_price), 2),
+                "old_price_usd": None,
+                "free_shipping": free_ship_val,
+                "free_shipping_49": free_ship_49_val,
+                "url": url,
+                "asin": asin,
+                "notes": args.notes.strip(),
+            }
+            existing_rows.append(new_row)
+            seen_keys.add(key)
+            added_count += 1
+            modified = True
+            print(
+                f"Added [{asin or 'NO-ASIN'}] ${new_row['price_usd']:.2f} "
+                f"(free={free_ship_val}, free49={free_ship_49_val}): {title}"
+            )
+
+        if added_count > 0:
+            print(f"Added {added_count} new deal(s) to {args.output}")
+
+    if modified:
+        _save_json(args.output, existing_rows)
+        print(f"Saved updated {args.output}")
+
+    if args.audit or (not modified and not raw_inputs):
+        _print_audit(existing_rows)
+
+    if not modified and not raw_inputs and not args.audit:
         print(
-            "Передай ссылки или ASIN аргументами или через --file links.txt.\n"
-            "Пример: python add_deals.py B09C5RG6KV https://www.amazon.com/dp/B00004OCL8 --price 34.99"
+            "\nПодсказка: передай ссылки/ASIN или используй --audit / --reset-shipping / --remove-unverified."
         )
         return 1
-
-    existing_rows = _load_existing_json(args.output)
-    seen_keys: Set[str] = set()
-    for row in existing_rows:
-        if isinstance(row, dict):
-            k = (str(row.get("asin") or "") or str(row.get("url") or "")).strip().upper()
-            if k:
-                seen_keys.add(k)
-
-    added_count = 0
-    for raw in raw_inputs:
-        url, asin = _normalize_input_to_url_and_asin(raw)
-        key = (asin or url).strip().upper()
-        if not key or key in seen_keys:
-            print(f"Skip duplicate or invalid: {raw}")
-            continue
-
-        title, scraped_price, is_404, det_free_ship, det_free_49 = _scrape_basic_amazon_info(url, asin)
-        if is_404:
-            print(f"Skip 404 not found: {url}")
-            continue
-
-        final_price = scraped_price if scraped_price is not None else args.price
-        free_ship_val = bool(args.free_shipping or det_free_ship)
-        free_ship_49_val = bool(args.free_shipping_49 or args.free_shipping or det_free_49)
-
-        new_row = {
-            "title": title,
-            "price_usd": round(float(final_price), 2),
-            "old_price_usd": None,
-            "free_shipping": free_ship_val,
-            "free_shipping_49": free_ship_49_val,
-            "url": url,
-            "asin": asin,
-            "notes": args.notes.strip(),
-        }
-        existing_rows.append(new_row)
-        seen_keys.add(key)
-        added_count += 1
-        print(
-            f"Added [{asin or 'NO-ASIN'}] ${new_row['price_usd']:.2f} "
-            f"(free={free_ship_val}, free49={free_ship_49_val}): {title}"
-        )
-
-    if added_count > 0:
-        _save_json(args.output, existing_rows)
-        print(f"Saved {added_count} new deal(s) to {args.output}")
-    else:
-        print("No new deals added.")
 
     return 0
 
