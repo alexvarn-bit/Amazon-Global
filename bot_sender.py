@@ -1,11 +1,18 @@
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from typing import List
 
-from amazon_source import fetch_live_deals, load_posted_asins, save_posted_asins
+from amazon_source import (
+    DEALS_JSON_FILE,
+    fetch_live_deals,
+    load_deals_from_json,
+    load_posted_asins,
+    save_posted_asins,
+)
 from config import Settings, load_settings
 from filter_deals import (
     DealItem,
@@ -214,14 +221,27 @@ def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool
 
 def main() -> int:
     settings = load_settings()
-    if not settings.feed_urls:
-        print("AMAZON_FEED_URLS is empty.")
+    posted_asins = load_posted_asins()
+
+    deals: List[DealItem] = []
+    if os.path.exists(DEALS_JSON_FILE):
+        deals.extend(load_deals_from_json(DEALS_JSON_FILE, posted_asins=posted_asins))
+
+    if settings.feed_urls:
+        existing_keys = {(d.asin or d.url).strip().upper() for d in deals if (d.asin or d.url).strip()}
+        combined_seen = posted_asins | existing_keys
+        deals.extend(
+            fetch_live_deals(
+                feed_urls=list(settings.feed_urls),
+                timeout_sec=settings.request_timeout_sec,
+                posted_asins=combined_seen,
+            )
+        )
+
+    if not deals:
+        print("No new deals found in deals.json or AMAZON_FEED_URLS.")
         return 0
 
-    deals = fetch_live_deals(
-        feed_urls=list(settings.feed_urls),
-        timeout_sec=settings.request_timeout_sec,
-    )
     sent = run_pipeline(settings=settings, deals=deals, persist_posted=True)
     print(f"Done. Posts sent: {sent}")
     return 0
