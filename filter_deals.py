@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
 from urllib.parse import urlparse
@@ -12,6 +13,44 @@ class DealItem:
     asin: str = ""
     old_price_usd: Optional[float] = None
     notes: str = ""
+
+
+_EXCLUDED_MEDIA_PATTERNS = (
+    # Фильмы и сериалы
+    r"\bblu-?ray\b",
+    r"\b4k\s*uhd\b",
+    r"\bdvd\b",
+    r"\bprime\s*video\b",
+    r"\bdigital\s*video\b",
+    r"\bmovie\b",
+    r"\bcomplete\s*series\b",
+    r"\bseason\s+\d+\b",
+    # Книги и аудиокниги
+    r"\bkindle\b",
+    r"\bpaperback\b",
+    r"\bhardcover\b",
+    r"\baudiobook\b",
+    r"\baudible\b",
+    r"\bebook\b",
+    r"\bboard\s*book\b",
+    r"\bmass\s*market\b",
+)
+
+_EXCLUDED_MEDIA_RE = re.compile(
+    "|".join(_EXCLUDED_MEDIA_PATTERNS),
+    flags=re.IGNORECASE,
+)
+
+
+def is_excluded_media(item: DealItem) -> bool:
+    haystack = " ".join(
+        part.strip()
+        for part in (item.title, item.notes, item.url)
+        if part and part.strip()
+    )
+    if not haystack:
+        return False
+    return bool(_EXCLUDED_MEDIA_RE.search(haystack))
 
 
 def is_amazon_deal(item: DealItem) -> bool:
@@ -40,8 +79,11 @@ def is_valid_deal(
     max_price_usd: float = 74.9,
     require_free_shipping: bool = False,
     require_amazon: bool = True,
+    exclude_books_and_movies: bool = True,
 ) -> bool:
     if not item.title.strip() or not item.url.strip():
+        return False
+    if exclude_books_and_movies and is_excluded_media(item):
         return False
     if require_amazon and not is_amazon_deal(item):
         return False
@@ -57,6 +99,7 @@ def filter_deals(
     max_price_usd: float = 74.9,
     require_free_shipping: bool = False,
     require_amazon: bool = True,
+    exclude_books_and_movies: bool = True,
     max_items: int = 5,
 ) -> List[DealItem]:
     result: List[DealItem] = []
@@ -66,6 +109,7 @@ def filter_deals(
             max_price_usd=max_price_usd,
             require_free_shipping=require_free_shipping,
             require_amazon=require_amazon,
+            exclude_books_and_movies=exclude_books_and_movies,
         ):
             result.append(item)
             if len(result) >= max_items:
