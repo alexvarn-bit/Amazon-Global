@@ -93,30 +93,30 @@ def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool
     sent_count = 0
 
     for idx, item in enumerate(valid_deals):
-        post_text = format_deal_post_ru(item, partner_tag=settings.amazon_partner_tag)
-        if settings.dry_run:
-            print(f"[DRY_RUN] Would send:\n{post_text}\n---")
+        post_text = format_deal_post_ru(
+            item,
+            partner_tag=settings.amazon_partner_tag,
+            free_shipping_threshold_usd=settings.free_shipping_threshold_usd,
+        )
+        ok = send_telegram_message(
+            bot_token=settings.bot_token,
+            channel_id=settings.channel_id,
+            text=post_text,
+            timeout_sec=settings.request_timeout_sec,
+        )
+        if ok:
             sent_count += 1
+            print(f"Sent deal: {item.title}")
+            key = (item.asin or item.url).strip().upper()
+            if key:
+                newly_posted.append(key)
         else:
-            ok = send_telegram_message(
-                bot_token=settings.bot_token,
-                channel_id=settings.channel_id,
-                text=post_text,
-                timeout_sec=settings.request_timeout_sec,
-            )
-            if ok:
-                sent_count += 1
-                print(f"Sent deal: {item.title}")
-                key = (item.asin or item.url).strip().upper()
-                if key:
-                    newly_posted.append(key)
-            else:
-                print(f"Failed to send deal: {item.title}", file=sys.stderr)
+            print(f"Failed to send deal: {item.title}", file=sys.stderr)
 
         if idx < len(valid_deals) - 1 and settings.sleep_between_posts_sec > 0:
             time.sleep(settings.sleep_between_posts_sec)
 
-    if persist_posted and newly_posted and not settings.dry_run:
+    if persist_posted and newly_posted:
         posted_asins.update(newly_posted)
         save_posted_asins(posted_asins)
         print(f"Saved {len(newly_posted)} new posted keys to posted_asins.json")
