@@ -18,6 +18,7 @@ class DealItem:
     asin: str = ""
     old_price_usd: Optional[float] = None
     notes: str = ""
+    free_shipping_49: bool = False
 
 
 _EXCLUDED_PATTERNS = (
@@ -205,6 +206,12 @@ def attach_partner_tag(url: str, partner_tag: str) -> str:
     return f"{clean_url}{sep}tag={tag}"
 
 
+def has_qualifying_shipping(item: DealItem, require_free_shipping: bool = True) -> bool:
+    if not require_free_shipping:
+        return True
+    return bool(item.free_shipping or item.free_shipping_49)
+
+
 def is_valid_deal(
     item: DealItem,
     max_price_usd: float = 74.9,
@@ -220,7 +227,7 @@ def is_valid_deal(
         return False
     if item.price_usd <= 0 or item.price_usd > max_price_usd:
         return False
-    if require_free_shipping and not item.free_shipping:
+    if not has_qualifying_shipping(item, require_free_shipping=require_free_shipping):
         return False
     return True
 
@@ -256,15 +263,22 @@ def format_deal_post_ru(
     final_url = attach_partner_tag(item.url, partner_tag)
     ru_title = translate_title_to_ru(item.title)
 
-    if item.price_usd < free_shipping_threshold_usd:
+    if item.free_shipping and item.price_usd >= free_shipping_threshold_usd:
+        shipping_line = f"Бесплатная доставка в Израиль (от ${free_shipping_threshold_usd:.0f})"
+    elif item.free_shipping_49 or item.free_shipping:
+        if item.price_usd < free_shipping_threshold_usd:
+            diff = free_shipping_threshold_usd - item.price_usd
+            shipping_line = (
+                f"Бесплатная доставка в Израиль при заказе от ${free_shipping_threshold_usd:.0f} "
+                f"(добрать корзину ещё на ~${diff:.2f})"
+            )
+        else:
+            shipping_line = f"Бесплатная доставка в Израиль (от ${free_shipping_threshold_usd:.0f})"
+    else:
         shipping_line = (
             f"Доставка в Израиль: проверьте условия (бесплатно при заказе от "
             f"${free_shipping_threshold_usd:.0f} на участвующие товары)"
         )
-    elif item.free_shipping:
-        shipping_line = "Бесплатная доставка в Израиль (от $49)"
-    else:
-        shipping_line = "Доставка в Израиль: проверьте наличие бесплатной доставки на странице товара"
 
     price_line = f"Цена: <b>${item.price_usd:.2f}</b>"
     if item.old_price_usd and item.old_price_usd > item.price_usd:
