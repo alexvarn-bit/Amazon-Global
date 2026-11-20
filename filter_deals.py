@@ -66,6 +66,23 @@ _EXCLUDED_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+_AMAZON_ALLOWED_HOSTS = {
+    "amazon.com",
+    "www.amazon.com",
+    "amzn.to",
+    "www.amzn.to",
+    "a.co",
+}
+
+_BAD_PATH_MARKERS = (
+    "/f/",
+    "/newsearch",
+    "/redirect",
+    "/gp/redirect",
+    "/s?",
+    "/s/",
+)
+
 
 def is_excluded_category(item: DealItem) -> bool:
     haystack = " ".join(
@@ -78,14 +95,26 @@ def is_excluded_category(item: DealItem) -> bool:
     return bool(_EXCLUDED_RE.search(haystack))
 
 
-def is_amazon_deal(item: DealItem) -> bool:
-    if item.asin and len(item.asin.strip()) == 10:
-        return True
+def has_clean_amazon_url(url: str) -> bool:
+    clean = (url or "").strip()
+    if not clean.startswith(("http://", "https://")):
+        return False
     try:
-        host = (urlparse(item.url.strip()).hostname or "").lower()
+        parsed = urlparse(clean)
+        host = (parsed.hostname or "").lower()
+        path_and_query = f"{parsed.path or ''}?{parsed.query or ''}".lower()
     except Exception:
-        host = ""
-    return "amazon." in host or "amzn." in host
+        return False
+
+    if host not in _AMAZON_ALLOWED_HOSTS:
+        return False
+    if any(marker in path_and_query for marker in _BAD_PATH_MARKERS):
+        return False
+    return True
+
+
+def is_amazon_deal(item: DealItem) -> bool:
+    return has_clean_amazon_url(item.url)
 
 
 def attach_partner_tag(url: str, partner_tag: str) -> str:
