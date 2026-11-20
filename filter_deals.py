@@ -59,7 +59,6 @@ _EXCLUDED_PATTERNS = (
     r"\bcreatine\b",
     r"\bprobiotics?\b",
     r"\bomega-?3\b",
-    r"\bgummies\b",
 )
 
 _EXCLUDED_RE = re.compile(
