@@ -73,11 +73,23 @@ def filter_deals(
     return result
 
 
-def format_deal_post_ru(item: DealItem, partner_tag: str = "") -> str:
+def format_deal_post_ru(
+    item: DealItem,
+    partner_tag: str = "",
+    free_shipping_threshold_usd: float = 49.0,
+) -> str:
     final_url = attach_partner_tag(item.url, partner_tag)
-    shipping_line = (
-        "Бесплатная доставка в Израиль" if item.free_shipping else "Доставка платная"
-    )
+
+    if item.free_shipping:
+        if item.price_usd < free_shipping_threshold_usd:
+            shipping_line = (
+                f"Бесплатная доставка в Израиль при заказе от ${free_shipping_threshold_usd:.0f} "
+                f"(нужен добор корзины)"
+            )
+        else:
+            shipping_line = "Бесплатная доставка в Израиль (от $49)"
+    else:
+        shipping_line = "Доставка платная"
 
     price_line = f"Цена: <b>${item.price_usd:.2f}</b>"
     if item.old_price_usd and item.old_price_usd > item.price_usd:
