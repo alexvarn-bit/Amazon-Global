@@ -59,6 +59,27 @@ _EXCLUDED_PATTERNS = (
     r"\bcreatine\b",
     r"\bprobiotics?\b",
     r"\bomega-?3\b",
+    r"\bgummies\b",
+    # Еда, снеки, соусы и напитки
+    r"\bfood\b",
+    r"\bsnacks?\b",
+    r"\bcandy\b",
+    r"\bchocolate\b",
+    r"\bcookies?\b",
+    r"\bchips?\b",
+    r"\bsauce\b",
+    r"\bketchup\b",
+    r"\bmayonnaise\b",
+    r"\bsauerkraut\b",
+    r"\bcoffee\b",
+    r"\btea\b",
+    r"\bjuice\b",
+    r"\bsoda\b",
+    r"\bbeer\b",
+    r"\bwhisky\b",
+    r"\bwhiskey\b",
+    r"\barak\b",
+    r"\bprotein\s+powder\b",
 )
 
 _EXCLUDED_RE = re.compile(
