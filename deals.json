@@ -1,0 +1,20 @@
+[
+  {
+    "title": "Anker 65W USB C Charger, 3-Port GaN Wall Charger",
+    "price_usd": 35.99,
+    "old_price_usd": 49.99,
+    "free_shipping": true,
+    "url": "https://www.amazon.com/dp/B09C5RG6KV",
+    "asin": "B09C5RG6KV",
+    "notes": "Компактное зарядное на 3 порта"
+  },
+  {
+    "title": "OXO Good Grips Stainless Steel Garlic Press",
+    "price_usd": 21.95,
+    "old_price_usd": 26.95,
+    "free_shipping": false,
+    "url": "https://www.amazon.com/dp/B00004OCL8",
+    "asin": "B00004OCL8",
+    "notes": ""
+  }
+]
