@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from typing import List
 
+from amazon_source import fetch_live_deals, load_posted_asins, save_posted_asins
 from config import Settings, load_settings
 from filter_deals import DealItem, filter_deals, format_deal_post_ru
 
@@ -75,7 +76,7 @@ def send_telegram_message(
         return False
 
 
-def run_pipeline(settings: Settings, deals: List[DealItem]) -> int:
+def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool = False) -> int:
     valid_deals = filter_deals(
         items=deals,
         max_price_usd=settings.max_price_usd,
@@ -87,7 +88,10 @@ def run_pipeline(settings: Settings, deals: List[DealItem]) -> int:
     if not valid_deals:
         return 0
 
+    posted_asins = load_posted_asins() if persist_posted else set()
+    newly_posted: List[str] = []
     sent_count = 0
+
     for idx, item in enumerate(valid_deals):
         post_text = format_deal_post_ru(item, partner_tag=settings.amazon_partner_tag)
         if settings.dry_run:
@@ -103,11 +107,19 @@ def run_pipeline(settings: Settings, deals: List[DealItem]) -> int:
             if ok:
                 sent_count += 1
                 print(f"Sent deal: {item.title}")
+                key = (item.asin or item.url).strip().upper()
+                if key:
+                    newly_posted.append(key)
             else:
                 print(f"Failed to send deal: {item.title}", file=sys.stderr)
 
         if idx < len(valid_deals) - 1 and settings.sleep_between_posts_sec > 0:
             time.sleep(settings.sleep_between_posts_sec)
+
+    if persist_posted and newly_posted and not settings.dry_run:
+        posted_asins.update(newly_posted)
+        save_posted_asins(posted_asins)
+        print(f"Saved {len(newly_posted)} new posted keys to posted_asins.json")
 
     return sent_count
 
@@ -128,11 +140,17 @@ def main() -> int:
 
     if args.test:
         deals = get_sample_deals()
+        sent = run_pipeline(settings=settings, deals=deals, persist_posted=False)
     else:
-        print("No live Amazon source wired yet. Pass --test to run sample deals.")
-        return 0
+        if not settings.feed_urls:
+            print("AMAZON_FEED_URLS is empty. Set feeds or pass --test.")
+            return 0
+        deals = fetch_live_deals(
+            feed_urls=list(settings.feed_urls),
+            timeout_sec=settings.request_timeout_sec,
+        )
+        sent = run_pipeline(settings=settings, deals=deals, persist_posted=True)
 
-    sent = run_pipeline(settings=settings, deals=deals)
     print(f"Done. Posts sent: {sent}")
     return 0
 
