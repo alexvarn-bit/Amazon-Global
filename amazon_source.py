@@ -18,6 +18,7 @@ _ASIN_RE = re.compile(
     re.IGNORECASE,
 )
 _HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_IMG_SRC_RE = re.compile(r"""<img[^>]+src\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 _ANY_URL_RE = re.compile(r"""https?://[^\s<>"']+""", re.IGNORECASE)
 _PRICE_RE = re.compile(r"(?:\$|USD\s*)(\d{1,4}(?:,\d{3})*(?:\.\d{1,2})?)", re.IGNORECASE)
 _OLD_PRICE_RE = re.compile(
@@ -69,7 +70,6 @@ def _is_amazon_url(url: str) -> bool:
 def _unwrap_redirect_url(raw_url: str) -> str:
     candidate = html.unescape(raw_url).strip().rstrip(".,);]}>")
     decoded = unquote(candidate)
-    # Ищем вложенный URL Amazon внутри параметров редиректа (например ?url=... или &u=...)
     nested_matches = _ANY_URL_RE.findall(decoded)
     for m in nested_matches:
         clean_m = m.rstrip(".,);]}>")
@@ -99,6 +99,28 @@ def _extract_amazon_url(primary_link: str, raw_text: str) -> str:
             return cand
 
     return _unwrap_redirect_url(primary_link)
+
+
+def _extract_image_url(entry: ET.Element, raw_description: str) -> str:
+    for child in entry.iter():
+        local = child.tag.split("}", 1)[-1].lower()
+        if local in {"enclosure", "content", "thumbnail"}:
+            url_attr = (child.attrib.get("url") or "").strip()
+            media_type = (child.attrib.get("type") or "").lower()
+            if url_attr.startswith(("http://", "https://")) and (
+                "image" in media_type
+                or local == "thumbnail"
+                or re.search(r"\.(?:jpg|jpeg|png|webp)(?:\?|$)", url_attr, re.I)
+            ):
+                return html.unescape(url_attr)
+
+    unescaped = html.unescape(raw_description)
+    img_match = _IMG_SRC_RE.search(unescaped)
+    if img_match:
+        img_url = img_match.group(1).strip()
+        if img_url.startswith(("http://", "https://")):
+            return html.unescape(img_url)
+    return ""
 
 
 def _extract_asin(url: str, text: str) -> str:
@@ -222,20 +244,21 @@ def _parse_feed_items(xml_text: str) -> List[DealItem]:
         resolved_url = _extract_amazon_url(raw_link, combined_text)
         asin = _extract_asin(resolved_url, combined_text)
         free_shipping = _detect_free_shipping(combined_text)
+        image_url = _extract_image_url(entry, description)
 
         clean_title = html.unescape(re.sub(r"<[^>]+>", " ", title))
         clean_title = re.sub(r"\s+", " ", clean_title).strip()
 
-        items.append(
-            DealItem(
-                title=clean_title,
-                price_usd=price_usd,
-                free_shipping=free_shipping,
-                url=resolved_url,
-                asin=asin,
-                old_price_usd=old_price_usd,
-            )
+        item = DealItem(
+            title=clean_title,
+            price_usd=price_usd,
+            free_shipping=free_shipping,
+            url=resolved_url,
+            asin=asin,
+            old_price_usd=old_price_usd,
         )
+        setattr(item, "image_url", image_url)
+        items.append(item)
 
     return items
 
