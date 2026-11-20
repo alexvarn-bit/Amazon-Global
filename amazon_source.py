@@ -329,6 +329,7 @@ def _parse_feed_items(xml_text: str) -> List[DealItem]:
             url=resolved_url,
             asin=asin,
             old_price_usd=old_price_usd,
+            free_shipping_49=free_shipping,
         )
         setattr(item, "image_url", image_url)
         items.append(item)
@@ -383,6 +384,7 @@ def load_deals_from_json(
         resolved_url = _resolve_amazon_redirect(raw_url)
         asin = str(row.get("asin") or "").strip().upper() or _extract_asin(resolved_url, title)
         free_shipping = bool(row.get("free_shipping", False))
+        free_shipping_49 = bool(row.get("free_shipping_49", free_shipping))
         notes = str(row.get("notes") or "").strip()
         image_url = str(row.get("image_url") or "").strip()
 
@@ -400,6 +402,7 @@ def load_deals_from_json(
             asin=asin,
             old_price_usd=old_price_usd,
             notes=notes,
+            free_shipping_49=free_shipping_49,
         )
         setattr(item, "image_url", image_url)
         loaded.append(item)
