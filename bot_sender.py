@@ -1,4 +1,3 @@
-import argparse
 import json
 import sys
 import time
@@ -13,35 +12,8 @@ from filter_deals import (
     filter_deals,
     format_deal_post_ru,
     is_amazon_deal,
+    is_excluded_category,
 )
-
-
-def get_sample_deals() -> List[DealItem]:
-    return [
-        DealItem(
-            title="Тестовый товар: USB-C хаб с быстрой зарядкой",
-            price_usd=29.99,
-            free_shipping=True,
-            url="https://www.amazon.com/dp/B000000001",
-            asin="B000000001",
-            old_price_usd=39.99,
-            notes="Проверка лимита до $74.90 и бесплатной доставки в IL",
-        ),
-        DealItem(
-            title="Отбракованный товар: дороже лимита",
-            price_usd=89.00,
-            free_shipping=True,
-            url="https://www.amazon.com/dp/B000000002",
-            asin="B000000002",
-        ),
-        DealItem(
-            title="Отбракованный товар: платная доставка",
-            price_usd=45.00,
-            free_shipping=False,
-            url="https://www.amazon.com/dp/B000000003",
-            asin="B000000003",
-        ),
-    ]
 
 
 def send_telegram_message(
@@ -81,17 +53,25 @@ def send_telegram_message(
         return False
 
 
-def _log_filter_diagnostics(deals: List[DealItem], max_price_usd: float, require_free_shipping: bool) -> None:
+def _log_filter_diagnostics(
+    deals: List[DealItem],
+    max_price_usd: float,
+    require_free_shipping: bool,
+) -> None:
+    excluded_cat = 0
     not_amazon = 0
     over_price = 0
     no_free_shipping = 0
 
     for item in deals:
+        cat_excluded = is_excluded_category(item)
         amazon_ok = is_amazon_deal(item)
         price_ok = 0 < item.price_usd <= max_price_usd
         ship_ok = (not require_free_shipping) or item.free_shipping
 
-        if not amazon_ok:
+        if cat_excluded:
+            excluded_cat += 1
+        elif not amazon_ok:
             not_amazon += 1
         elif not price_ok:
             over_price += 1
@@ -99,17 +79,20 @@ def _log_filter_diagnostics(deals: List[DealItem], max_price_usd: float, require
             no_free_shipping += 1
 
     print(
-        f"Filter breakdown -> not_amazon: {not_amazon} | "
+        f"Filter breakdown -> excluded_cat: {excluded_cat} | "
+        f"not_amazon: {not_amazon} | "
         f"over_${max_price_usd:.2f}: {over_price} | "
         f"no_free_shipping_tag: {no_free_shipping}"
     )
 
 
 def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool = False) -> int:
+    require_free_shipping = bool(getattr(settings, "require_free_shipping", False))
+
     valid_deals = filter_deals(
         items=deals,
         max_price_usd=settings.max_price_usd,
-        require_free_shipping=settings.require_free_shipping,
+        require_free_shipping=require_free_shipping,
         max_items=settings.max_items_per_run,
     )
 
@@ -118,7 +101,7 @@ def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool
         _log_filter_diagnostics(
             deals=deals,
             max_price_usd=settings.max_price_usd,
-            require_free_shipping=settings.require_free_shipping,
+            require_free_shipping=require_free_shipping,
         )
     if not valid_deals:
         return 0
@@ -159,33 +142,17 @@ def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool
     return sent_count
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Deal bot sender")
-    parser.add_argument(
-        "--test",
-        action="store_true",
-        help="Run with built-in sample deals to verify filter and Telegram posting",
-    )
-    return parser.parse_args()
-
-
 def main() -> int:
-    args = parse_args()
     settings = load_settings()
+    if not settings.feed_urls:
+        print("AMAZON_FEED_URLS is empty.")
+        return 0
 
-    if args.test:
-        deals = get_sample_deals()
-        sent = run_pipeline(settings=settings, deals=deals, persist_posted=False)
-    else:
-        if not settings.feed_urls:
-            print("AMAZON_FEED_URLS is empty. Set feeds or pass --test.")
-            return 0
-        deals = fetch_live_deals(
-            feed_urls=list(settings.feed_urls),
-            timeout_sec=settings.request_timeout_sec,
-        )
-        sent = run_pipeline(settings=settings, deals=deals, persist_posted=True)
-
+    deals = fetch_live_deals(
+        feed_urls=list(settings.feed_urls),
+        timeout_sec=settings.request_timeout_sec,
+    )
+    sent = run_pipeline(settings=settings, deals=deals, persist_posted=True)
     print(f"Done. Posts sent: {sent}")
     return 0
 
