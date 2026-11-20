@@ -8,7 +8,12 @@ from typing import List
 
 from amazon_source import fetch_live_deals, load_posted_asins, save_posted_asins
 from config import Settings, load_settings
-from filter_deals import DealItem, filter_deals, format_deal_post_ru
+from filter_deals import (
+    DealItem,
+    filter_deals,
+    format_deal_post_ru,
+    is_amazon_deal,
+)
 
 
 def get_sample_deals() -> List[DealItem]:
@@ -76,6 +81,30 @@ def send_telegram_message(
         return False
 
 
+def _log_filter_diagnostics(deals: List[DealItem], max_price_usd: float, require_free_shipping: bool) -> None:
+    not_amazon = 0
+    over_price = 0
+    no_free_shipping = 0
+
+    for item in deals:
+        amazon_ok = is_amazon_deal(item)
+        price_ok = 0 < item.price_usd <= max_price_usd
+        ship_ok = (not require_free_shipping) or item.free_shipping
+
+        if not amazon_ok:
+            not_amazon += 1
+        elif not price_ok:
+            over_price += 1
+        elif not ship_ok:
+            no_free_shipping += 1
+
+    print(
+        f"Filter breakdown -> not_amazon: {not_amazon} | "
+        f"over_${max_price_usd:.2f}: {over_price} | "
+        f"no_free_shipping_tag: {no_free_shipping}"
+    )
+
+
 def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool = False) -> int:
     valid_deals = filter_deals(
         items=deals,
@@ -85,6 +114,12 @@ def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool
     )
 
     print(f"Total incoming deals: {len(deals)} | Passed filter: {len(valid_deals)}")
+    if deals and not valid_deals:
+        _log_filter_diagnostics(
+            deals=deals,
+            max_price_usd=settings.max_price_usd,
+            require_free_shipping=settings.require_free_shipping,
+        )
     if not valid_deals:
         return 0
 
