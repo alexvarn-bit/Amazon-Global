@@ -21,6 +21,18 @@ _PRICE_SPAN_RE = re.compile(
     r"<span[^>]*class=[\"'][^\"']*a-price-fraction[^\"']*[\"'][^>]*>(\d{2})</span>",
     re.I,
 )
+_PAID_SHIP_TO_ISRAEL_RE = re.compile(
+    r"\$\s*\d+(?:\.\d{1,2})?\s+Shipping(?:\s+to\s+Israel)?",
+    re.IGNORECASE,
+)
+_FREE_SHIPPING_PAGE_RE = re.compile(
+    r"\bFREE\s+(?:International\s+)?Shipping(?:\s+to\s+Israel)?\b",
+    re.IGNORECASE,
+)
+_FREE_SHIP_49_PAGE_RE = re.compile(
+    r"\bFREE\s+(?:International\s+)?Shipping\s+on\s+(?:eligible\s+)?orders?\s+over\s+\$49\b",
+    re.IGNORECASE,
+)
 
 _HEADERS = {
     "User-Agent": (
@@ -52,10 +64,34 @@ def _normalize_input_to_url_and_asin(raw_entry: str) -> tuple[str, str]:
     return resolved, asin
 
 
-def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float], bool]:
+def _detect_shipping_from_html(page: str) -> tuple[bool, bool]:
+    """
+    Возвращает (free_shipping, free_shipping_49) на основе текста страницы.
+    Если видна явная платная доставка — возвращает (False, False).
+    """
+    if not page:
+        return False, False
+
+    plain_text = html.unescape(re.sub(r"<[^>]+>", " ", page))
+    plain_text = re.sub(r"\s+", " ", plain_text)
+
+    if _PAID_SHIP_TO_ISRAEL_RE.search(plain_text) and not _FREE_SHIPPING_PAGE_RE.search(plain_text):
+        return False, False
+
+    has_free_49 = bool(_FREE_SHIP_49_PAGE_RE.search(plain_text))
+    has_free_direct = bool(_FREE_SHIPPING_PAGE_RE.search(plain_text)) and not has_free_49
+    return has_free_direct, (has_free_49 or has_free_direct)
+
+
+def _scrape_basic_amazon_info(
+    url: str, asin: str
+) -> tuple[str, Optional[float], bool, bool, bool]:
+    """
+    Возвращает (title, price_usd, is_not_found_404, detected_free_shipping, detected_free_shipping_49).
+    """
     fallback_title = f"Amazon item {asin}".strip()
     if not url:
-        return fallback_title, None, False
+        return fallback_title, None, False, False, False
 
     try:
         req = urllib.request.Request(url, headers=_HEADERS)
@@ -65,10 +101,10 @@ def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float]
         page = raw.decode(encoding, errors="replace")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            return fallback_title, None, True
-        return fallback_title, None, False
+            return fallback_title, None, True, False, False
+        return fallback_title, None, False, False, False
     except Exception:
-        return fallback_title, None, False
+        return fallback_title, None, False, False, False
 
     title = ""
     m_title = _TITLE_TAG_RE.search(page)
@@ -97,7 +133,8 @@ def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float]
         except ValueError:
             price = None
 
-    return title, price, False
+    det_free_ship, det_free_49 = _detect_shipping_from_html(page)
+    return title, price, False, det_free_ship, det_free_49
 
 
 def _load_existing_json(filepath: str) -> List[dict]:
@@ -178,9 +215,14 @@ def main() -> int:
         help="Цена по умолчанию, если не удалось распарсить со страницы (по умолчанию 29.99)",
     )
     parser.add_argument(
-        "--allow-paid-shipping",
+        "--free-shipping",
         action="store_true",
-        help="Не помечать добавляемые товары как участвующие в доставке (free_shipping=False, free_shipping_49=False)",
+        help="Явно пометить добавляемые товары как free_shipping=true",
+    )
+    parser.add_argument(
+        "--free-shipping-49",
+        action="store_true",
+        help="Явно пометить добавляемые товары как участвующие в доставке от $49 (free_shipping_49=true)",
     )
     parser.add_argument(
         "--notes",
@@ -196,8 +238,6 @@ def main() -> int:
             "Пример: python add_deals.py B09C5RG6KV https://www.amazon.com/dp/B00004OCL8 --price 34.99"
         )
         return 1
-
-    shipping_ok = not bool(args.allow_paid_shipping)
 
     existing_rows = _load_existing_json(args.output)
     seen_keys: Set[str] = set()
@@ -215,19 +255,21 @@ def main() -> int:
             print(f"Skip duplicate or invalid: {raw}")
             continue
 
-        title, scraped_price, is_404 = _scrape_basic_amazon_info(url, asin)
+        title, scraped_price, is_404, det_free_ship, det_free_49 = _scrape_basic_amazon_info(url, asin)
         if is_404:
             print(f"Skip 404 not found: {url}")
             continue
 
         final_price = scraped_price if scraped_price is not None else args.price
+        free_ship_val = bool(args.free_shipping or det_free_ship)
+        free_ship_49_val = bool(args.free_shipping_49 or args.free_shipping or det_free_49)
 
         new_row = {
             "title": title,
             "price_usd": round(float(final_price), 2),
             "old_price_usd": None,
-            "free_shipping": shipping_ok,
-            "free_shipping_49": shipping_ok,
+            "free_shipping": free_ship_val,
+            "free_shipping_49": free_ship_49_val,
             "url": url,
             "asin": asin,
             "notes": args.notes.strip(),
@@ -235,7 +277,10 @@ def main() -> int:
         existing_rows.append(new_row)
         seen_keys.add(key)
         added_count += 1
-        print(f"Added [{asin or 'NO-ASIN'}] ${new_row['price_usd']:.2f}: {title}")
+        print(
+            f"Added [{asin or 'NO-ASIN'}] ${new_row['price_usd']:.2f} "
+            f"(free={free_ship_val}, free49={free_ship_49_val}): {title}"
+        )
 
     if added_count > 0:
         _save_json(args.output, existing_rows)
