@@ -62,6 +62,7 @@ def _log_filter_diagnostics(
     not_amazon = 0
     over_price = 0
     no_free_shipping = 0
+    samples: List[str] = []
 
     for item in deals:
         cat_excluded = is_excluded_category(item)
@@ -69,14 +70,25 @@ def _log_filter_diagnostics(
         price_ok = 0 < item.price_usd <= max_price_usd
         ship_ok = (not require_free_shipping) or item.free_shipping
 
+        reason = ""
         if cat_excluded:
             excluded_cat += 1
+            reason = "excluded_cat"
         elif not amazon_ok:
             not_amazon += 1
+            reason = "not_amazon"
         elif not price_ok:
             over_price += 1
+            reason = "over_price"
         elif not ship_ok:
             no_free_shipping += 1
+            reason = "no_free_shipping"
+
+        if reason and len(samples) < 5:
+            samples.append(
+                f"[{reason}] ${item.price_usd:.2f} | asin={item.asin or '-'} | "
+                f"{item.url[:60]} | {item.title[:50]}"
+            )
 
     print(
         f"Filter breakdown -> excluded_cat: {excluded_cat} | "
@@ -84,6 +96,8 @@ def _log_filter_diagnostics(
         f"over_${max_price_usd:.2f}: {over_price} | "
         f"no_free_shipping_tag: {no_free_shipping}"
     )
+    for s in samples:
+        print(f"Sample drop: {s}")
 
 
 def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool = False) -> int:
