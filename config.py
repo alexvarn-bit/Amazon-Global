@@ -2,6 +2,12 @@ import os
 from dataclasses import dataclass
 from typing import Tuple
 
+DEFAULT_RSS_FEEDS: Tuple[str, ...] = (
+    "https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1",
+    "https://slickdeals.net/newsearch.php?mode=popdeals&searcharea=deals&searchin=first&rss=1",
+    "https://ca.camelcamelcamel.com/top_drops/feed",
+)
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -12,7 +18,7 @@ class Settings:
     max_price_usd: float = 74.9
     require_free_shipping: bool = True
     amazon_partner_tag: str = ""
-    feed_urls: Tuple[str, ...] = ()
+    feed_urls: Tuple[str, ...] = DEFAULT_RSS_FEEDS
     request_timeout_sec: int = 20
     max_items_per_run: int = 5
     sleep_between_posts_sec: float = 1.5
@@ -20,10 +26,11 @@ class Settings:
 
 
 def _parse_feed_urls(raw: str) -> Tuple[str, ...]:
-    if not raw:
-        return ()
+    if not raw.strip():
+        return DEFAULT_RSS_FEEDS
     parts = [u.strip() for u in raw.replace("\n", ",").split(",")]
-    return tuple(u for u in parts if u)
+    parsed = tuple(u for u in parts if u)
+    return parsed or DEFAULT_RSS_FEEDS
 
 
 def load_settings() -> Settings:
