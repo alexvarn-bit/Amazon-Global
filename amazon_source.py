@@ -101,7 +101,7 @@ def _extract_amazon_url(primary_link: str, raw_text: str) -> str:
     return _unwrap_redirect_url(primary_link)
 
 
-def _extract_image_url(entry: ET.Element, raw_description: str) -> str:
+def _extract_image_url(entry: ET.Element, raw_description: str, asin: str = "") -> str:
     for child in entry.iter():
         local = child.tag.split("}", 1)[-1].lower()
         if local in {"enclosure", "content", "thumbnail"}:
@@ -120,6 +120,11 @@ def _extract_image_url(entry: ET.Element, raw_description: str) -> str:
         img_url = img_match.group(1).strip()
         if img_url.startswith(("http://", "https://")):
             return html.unescape(img_url)
+
+    clean_asin = (asin or "").strip().upper()
+    if len(clean_asin) == 10 and not clean_asin.startswith("0"):
+        return f"https://m.media-amazon.com/images/P/{clean_asin}.01._SCLZZZZZZZ_.jpg"
+
     return ""
 
 
@@ -244,7 +249,7 @@ def _parse_feed_items(xml_text: str) -> List[DealItem]:
         resolved_url = _extract_amazon_url(raw_link, combined_text)
         asin = _extract_asin(resolved_url, combined_text)
         free_shipping = _detect_free_shipping(combined_text)
-        image_url = _extract_image_url(entry, description)
+        image_url = _extract_image_url(entry, description, asin=asin)
 
         clean_title = html.unescape(re.sub(r"<[^>]+>", " ", title))
         clean_title = re.sub(r"\s+", " ", clean_title).strip()
