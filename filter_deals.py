@@ -15,7 +15,7 @@ class DealItem:
     notes: str = ""
 
 
-_EXCLUDED_MEDIA_PATTERNS = (
+_EXCLUDED_PATTERNS = (
     # Фильмы и сериалы
     r"\bblu-?ray\b",
     r"\b4k\s*uhd\b",
@@ -34,15 +34,41 @@ _EXCLUDED_MEDIA_PATTERNS = (
     r"\bebook\b",
     r"\bboard\s*book\b",
     r"\bmass\s*market\b",
+    # Софт и цифровые коды
+    r"\bsoftware\b",
+    r"\blicense\s*key\b",
+    r"\bactivation\s*code\b",
+    r"\bdigital\s*code\b",
+    r"\bwindows\s*1[01]\b",
+    r"\boffice\s*365\b",
+    r"\bantivirus\b",
+    r"\bsubscription\b",
+    # Игры и игровые платформы
+    r"\bps[45]\b",
+    r"\bplaystation\b",
+    r"\bxbox\b",
+    r"\bnintendo\s*switch\b",
+    r"\bsteam\s*key\b",
+    r"\bgame\s*code\b",
+    r"\bvideo\s*game\b",
+    # БАДы, витамины и добавки
+    r"\bsupplements?\b",
+    r"\bvitamins?\b",
+    r"\bmelatonin\b",
+    r"\bcollagen\b",
+    r"\bcreatine\b",
+    r"\bprobiotics?\b",
+    r"\bomega-?3\b",
+    r"\bgummies\b",
 )
 
-_EXCLUDED_MEDIA_RE = re.compile(
-    "|".join(_EXCLUDED_MEDIA_PATTERNS),
+_EXCLUDED_RE = re.compile(
+    "|".join(_EXCLUDED_PATTERNS),
     flags=re.IGNORECASE,
 )
 
 
-def is_excluded_media(item: DealItem) -> bool:
+def is_excluded_category(item: DealItem) -> bool:
     haystack = " ".join(
         part.strip()
         for part in (item.title, item.notes, item.url)
@@ -50,7 +76,7 @@ def is_excluded_media(item: DealItem) -> bool:
     )
     if not haystack:
         return False
-    return bool(_EXCLUDED_MEDIA_RE.search(haystack))
+    return bool(_EXCLUDED_RE.search(haystack))
 
 
 def is_amazon_deal(item: DealItem) -> bool:
@@ -79,11 +105,11 @@ def is_valid_deal(
     max_price_usd: float = 74.9,
     require_free_shipping: bool = False,
     require_amazon: bool = True,
-    exclude_books_and_movies: bool = True,
+    exclude_unwanted_categories: bool = True,
 ) -> bool:
     if not item.title.strip() or not item.url.strip():
         return False
-    if exclude_books_and_movies and is_excluded_media(item):
+    if exclude_unwanted_categories and is_excluded_category(item):
         return False
     if require_amazon and not is_amazon_deal(item):
         return False
@@ -99,7 +125,7 @@ def filter_deals(
     max_price_usd: float = 74.9,
     require_free_shipping: bool = False,
     require_amazon: bool = True,
-    exclude_books_and_movies: bool = True,
+    exclude_unwanted_categories: bool = True,
     max_items: int = 5,
 ) -> List[DealItem]:
     result: List[DealItem] = []
@@ -109,7 +135,7 @@ def filter_deals(
             max_price_usd=max_price_usd,
             require_free_shipping=require_free_shipping,
             require_amazon=require_amazon,
-            exclude_books_and_movies=exclude_books_and_movies,
+            exclude_unwanted_categories=exclude_unwanted_categories,
         ):
             result.append(item)
             if len(result) >= max_items:
