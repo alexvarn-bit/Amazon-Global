@@ -102,7 +102,9 @@ def _send_deal_post(
         )
         if sent_photo:
             return True
-        print(f"Fallback to text message for: {item.title}")
+        print(f"Photo failed ({image_url}), fallback to text for: {item.title}")
+    else:
+        print(f"No image_url found, sending text for: {item.title}")
 
     return send_telegram_message(
         bot_token=settings.bot_token,
