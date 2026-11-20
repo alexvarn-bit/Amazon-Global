@@ -1,209 +1,237 @@
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import List, Set
-from urllib.parse import urlparse
+from typing import Iterable, List, Optional, Set
+from urllib.parse import unquote, urlparse
 
 from filter_deals import DealItem
 
-ASIN_PATTERN = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})", re.IGNORECASE)
-PRICE_PATTERN = re.compile(r"\$\s*(\d+(?:\.\d{1,2})?)")
+POSTED_ASINS_FILE = "posted_asins.json"
 
-FREE_SHIPPING_MARKERS = (
-    "free shipping",
-    "free international shipping",
-    "free s&h",
-    "free delivery",
-    "бесплатная доставка",
+_ASIN_RE = re.compile(r"(?:/dp/|/gp/product/|/exec/obidos/ASIN/|/o/ASIN/)([A-Z0-9]{10})", re.IGNORECASE)
+_PRICE_RE = re.compile(r"(?:\$|USD\s*)(\d{1,4}(?:,\d{3})*(?:\.\d{1,2})?)", re.IGNORECASE)
+_OLD_PRICE_RE = re.compile(
+    r"(?:was|list(?:\s*price)?|reg(?:\.|\s*price)?|<s>|<del>)[^\d$]{0,15}\$?\s*(\d{1,4}(?:,\d{3})*(?:\.\d{1,2})?)",
+    re.IGNORECASE,
 )
-PAID_OR_NO_SHIPPING_MARKERS = (
-    "no shipping",
-    "shipping extra",
-    "plus shipping",
-    "in-store only",
-    "pickup only",
+_FREE_SHIP_RE = re.compile(
+    r"\b(?:free\s+shipping|free\s+international\s+shipping|free\s+s&h|free\s+delivery|бесплатная\s+доставка)\b",
+    re.IGNORECASE,
+)
+_PAID_SHIP_RE = re.compile(
+    r"\b(?:shipping\s*:?\s*\$\s*\d+(?:\.\d{1,2})?|\$\s*\d+(?:\.\d{1,2})?\s+shipping|платная\s+доставка)\b",
+    re.IGNORECASE,
 )
 
 
-def extract_asin(url: str) -> str:
-    match = ASIN_PATTERN.search(url or "")
-    return match.group(1).upper() if match else ""
-
-
-def _is_amazon_url_or_text(url: str, description: str = "") -> bool:
-    try:
-        host = (urlparse((url or "").strip()).hostname or "").lower()
-    except Exception:
-        host = ""
-    if "amazon." in host or "amzn." in host:
-        return True
-    combined = f"{url} {description}".lower()
-    return "amazon.com" in combined or "amzn.to" in combined or "/dp/" in combined
-
-
-def normalize_amazon_url(url: str, asin: str = "") -> str:
-    clean = (url or "").strip()
-    detected_asin = asin or extract_asin(clean)
-    if detected_asin:
-        return f"https://www.amazon.com/dp/{detected_asin}"
-    return clean
-
-
-def load_posted_asins(state_file: str = "posted_asins.json") -> Set[str]:
-    if not os.path.exists(state_file):
+def load_posted_asins(filepath: str = POSTED_ASINS_FILE) -> Set[str]:
+    if not os.path.exists(filepath):
         return set()
     try:
-        with open(state_file, "r", encoding="utf-8") as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
             return {str(x).strip().upper() for x in data if str(x).strip()}
-    except Exception:
-        pass
+        if isinstance(data, dict) and isinstance(data.get("posted"), list):
+            return {str(x).strip().upper() for x in data["posted"] if str(x).strip()}
+    except Exception as exc:
+        print(f"Warning: failed to load {filepath}: {exc}", file=sys.stderr)
     return set()
 
 
-def save_posted_asins(asins: Set[str], state_file: str = "posted_asins.json", limit: int = 500) -> None:
-    trimmed = sorted(asins)[-limit:]
-    with open(state_file, "w", encoding="utf-8") as f:
-        json.dump(trimmed, f, ensure_ascii=False, indent=2)
+def save_posted_asins(posted: Iterable[str], filepath: str = POSTED_ASINS_FILE) -> None:
+    cleaned = sorted({str(x).strip().upper() for x in posted if str(x).strip()})
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+        f.write("\n")
 
 
-def _fetch_text(url: str, timeout_sec: int = 20) -> str:
+def _extract_asin(url: str, text: str) -> str:
+    for candidate in (url, unquote(url), text):
+        if not candidate:
+            continue
+        match = _ASIN_RE.search(candidate)
+        if match:
+            return match.group(1).upper()
+    return ""
+
+
+def _parse_price_num(raw: str) -> Optional[float]:
+    try:
+        val = float(raw.replace(",", "").strip())
+        return val if val > 0 else None
+    except ValueError:
+        return None
+
+
+def _extract_prices(text: str) -> tuple[Optional[float], Optional[float]]:
+    matches = [_parse_price_num(m) for m in _PRICE_RE.findall(text)]
+    prices = [p for p in matches if p is not None]
+    if not prices:
+        return None, None
+
+    current_price = prices[0]
+    old_price: Optional[float] = None
+
+    old_match = _OLD_PRICE_RE.search(text)
+    if old_match:
+        parsed_old = _parse_price_num(old_match.group(1))
+        if parsed_old and parsed_old > current_price:
+            old_price = parsed_old
+
+    if old_price is None and len(prices) > 1:
+        higher = [p for p in prices[1:] if p > current_price]
+        if higher:
+            old_price = max(higher)
+
+    return current_price, old_price
+
+
+def _detect_free_shipping(text: str) -> bool:
+    if _PAID_SHIP_RE.search(text) and not _FREE_SHIP_RE.search(text):
+        return False
+    return bool(_FREE_SHIP_RE.search(text))
+
+
+def _fetch_xml(url: str, timeout_sec: int = 20) -> Optional[str]:
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0 (compatible; DealFinderBot/1.0)",
-            "Accept": "application/rss+xml, application/xml, application/json, text/xml;q=0.9, */*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw = resp.read()
+        encoding = resp.headers.get_content_charset() or "utf-8"
+        return raw.decode(encoding, errors="replace")
+    except urllib.error.HTTPError as exc:
+        print(f"Feed HTTP error {exc.code} for {url}", file=sys.stderr)
+        return None
+    except Exception as exc:
+        print(f"Feed fetch error for {url}: {exc}", file=sys.stderr)
+        return None
 
 
-def _detect_free_shipping(text_lower: str) -> bool:
-    if any(bad in text_lower for bad in PAID_OR_NO_SHIPPING_MARKERS):
-        return False
-    return any(marker in text_lower for marker in FREE_SHIPPING_MARKERS)
+def _child_text(elem: ET.Element, names: tuple[str, ...]) -> str:
+    for child in elem:
+        local = child.tag.split("}", 1)[-1].lower()
+        if local in names:
+            if child.text and child.text.strip():
+                return child.text.strip()
+            combined = "".join(child.itertext()).strip()
+            if combined:
+                return combined
+    return ""
 
 
-def parse_rss_deals(xml_text: str) -> List[DealItem]:
-    deals: List[DealItem] = []
-    root = ET.fromstring(xml_text)
+def _parse_feed_items(xml_text: str) -> List[DealItem]:
+    items: List[DealItem] = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        print(f"XML parse error: {exc}", file=sys.stderr)
+        return items
 
-    for item_el in root.findall(".//item"):
-        title = (item_el.findtext("title") or "").strip()
-        link = (item_el.findtext("link") or "").strip()
-        description = (item_el.findtext("description") or "").strip()
+    entries: List[ET.Element] = []
+    for elem in root.iter():
+        local = elem.tag.split("}", 1)[-1].lower()
+        if local in {"item", "entry"}:
+            entries.append(elem)
 
-        if not title or not link:
+    for entry in entries:
+        title = _child_text(entry, ("title",))
+        link = _child_text(entry, ("link", "guid", "id"))
+        if not link:
+            for child in entry:
+                if child.tag.split("}", 1)[-1].lower() == "link":
+                    href = child.attrib.get("href", "").strip()
+                    if href:
+                        link = href
+                        break
+
+        description = _child_text(entry, ("description", "summary", "encoded", "content"))
+        combined_text = f"{title} {description} {link}"
+
+        price_usd, old_price_usd = _extract_prices(combined_text)
+        if price_usd is None:
             continue
 
-        asin = extract_asin(link) or extract_asin(description)
-        if not asin and not _is_amazon_url_or_text(link, description):
-            continue
+        asin = _extract_asin(link, combined_text)
+        free_shipping = _detect_free_shipping(combined_text)
 
-        clean_url = normalize_amazon_url(link, asin)
+        clean_title = re.sub(r"<[^>]+>", " ", title)
+        clean_title = re.sub(r"\s+", " ", clean_title).strip()
 
-        combined_text = f"{title} {description}"
-        price_matches = PRICE_PATTERN.findall(combined_text)
-        if not price_matches:
-            continue
-
-        prices = [float(p) for p in price_matches if float(p) > 0]
-        if not prices:
-            continue
-
-        current_price = min(prices)
-        old_price = max(prices) if len(prices) > 1 and max(prices) > current_price else None
-        free_shipping = _detect_free_shipping(combined_text.lower())
-
-        deals.append(
+        items.append(
             DealItem(
-                title=title,
-                price_usd=current_price,
+                title=clean_title,
+                price_usd=price_usd,
                 free_shipping=free_shipping,
-                url=clean_url,
+                url=link.strip(),
                 asin=asin,
-                old_price_usd=old_price,
+                old_price_usd=old_price_usd,
             )
         )
 
-    return deals
+    return items
 
 
-def parse_json_deals(json_text: str) -> List[DealItem]:
-    data = json.loads(json_text)
-    raw_items = data if isinstance(data, list) else data.get("items", [])
-    deals: List[DealItem] = []
-
-    for entry in raw_items:
-        if not isinstance(entry, dict):
-            continue
-        title = str(entry.get("title", "")).strip()
-        url = str(entry.get("url", "")).strip()
-        asin = str(entry.get("asin", "")).strip().upper() or extract_asin(url)
-        notes = str(entry.get("notes", "")).strip()
-
-        if not asin and not _is_amazon_url_or_text(url, notes):
-            continue
-
-        try:
-            price_usd = float(entry.get("price_usd", 0))
-        except (TypeError, ValueError):
-            continue
-
-        old_price_raw = entry.get("old_price_usd")
-        old_price_usd = float(old_price_raw) if old_price_raw else None
-        free_shipping = bool(entry.get("free_shipping", False))
-
-        if title and (url or asin) and price_usd > 0:
-            deals.append(
-                DealItem(
-                    title=title,
-                    price_usd=price_usd,
-                    free_shipping=free_shipping,
-                    url=normalize_amazon_url(url, asin),
-                    asin=asin,
-                    old_price_usd=old_price_usd,
-                    notes=notes,
-                )
-            )
-    return deals
+def _short_feed_label(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc or url
+    path = parsed.path.rstrip("/")
+    return f"{host}{path}" if path else host
 
 
-def fetch_live_deals(feed_urls: List[str], timeout_sec: int = 20) -> List[DealItem]:
-    posted_asins = load_posted_asins()
-    collected: List[DealItem] = []
-    seen_in_run: Set[str] = set()
+def _log_per_feed_counts(per_feed_counts: List[tuple[str, int]]) -> None:
+    if not per_feed_counts:
+        return
+    parts = [f"{_short_feed_label(u)}: {cnt}" for u, cnt in per_feed_counts]
+    print("Per-feed incoming deals -> " + " | ".join(parts))
 
-    for feed_url in feed_urls:
-        clean_feed = feed_url.strip()
-        if not clean_feed:
+
+def fetch_live_deals(
+    feed_urls: List[str],
+    timeout_sec: int = 20,
+    posted_asins: Optional[Set[str]] = None,
+) -> List[DealItem]:
+    seen_keys: Set[str] = {k.strip().upper() for k in (posted_asins or set()) if k.strip()}
+    all_deals: List[DealItem] = []
+    per_feed_counts: List[tuple[str, int]] = []
+
+    for url in feed_urls:
+        clean_url = url.strip()
+        if not clean_url:
             continue
 
-        parsed_url = urlparse(clean_feed)
-        if parsed_url.scheme not in {"http", "https"}:
+        xml_text = _fetch_xml(clean_url, timeout_sec=timeout_sec)
+        if not xml_text:
+            per_feed_counts.append((clean_url, 0))
             continue
 
-        try:
-            raw_text = _fetch_text(clean_feed, timeout_sec=timeout_sec)
-            stripped = raw_text.lstrip()
-            if stripped.startswith("{") or stripped.startswith("["):
-                items = parse_json_deals(raw_text)
-            else:
-                items = parse_rss_deals(raw_text)
-        except (urllib.error.URLError, ET.ParseError, json.JSONDecodeError) as exc:
-            print(f"Feed error ({clean_feed}): {exc}")
-            continue
+        parsed_items = _parse_feed_items(xml_text)
+        added_from_feed = 0
 
-        for item in items:
-            dedup_key = item.asin or item.url
-            if not dedup_key or dedup_key in posted_asins or dedup_key in seen_in_run:
+        for item in parsed_items:
+            dedup_key = (item.asin or item.url).strip().upper()
+            if dedup_key and dedup_key in seen_keys:
                 continue
-            seen_in_run.add(dedup_key)
-            collected.append(item)
+            if dedup_key:
+                seen_keys.add(dedup_key)
+            all_deals.append(item)
+            added_from_feed += 1
 
-    return collected
+        per_feed_counts.append((clean_url, added_from_feed))
+
+    _log_per_feed_counts(per_feed_counts)
+    return all_deals
