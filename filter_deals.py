@@ -38,7 +38,7 @@ def attach_partner_tag(url: str, partner_tag: str) -> str:
 def is_valid_deal(
     item: DealItem,
     max_price_usd: float = 74.9,
-    require_free_shipping: bool = True,
+    require_free_shipping: bool = False,
     require_amazon: bool = True,
 ) -> bool:
     if not item.title.strip() or not item.url.strip():
@@ -55,7 +55,7 @@ def is_valid_deal(
 def filter_deals(
     items: Iterable[DealItem],
     max_price_usd: float = 74.9,
-    require_free_shipping: bool = True,
+    require_free_shipping: bool = False,
     require_amazon: bool = True,
     max_items: int = 5,
 ) -> List[DealItem]:
@@ -80,16 +80,15 @@ def format_deal_post_ru(
 ) -> str:
     final_url = attach_partner_tag(item.url, partner_tag)
 
-    if item.free_shipping:
-        if item.price_usd < free_shipping_threshold_usd:
-            shipping_line = (
-                f"Бесплатная доставка в Израиль при заказе от ${free_shipping_threshold_usd:.0f} "
-                f"(нужен добор корзины)"
-            )
-        else:
-            shipping_line = "Бесплатная доставка в Израиль (от $49)"
+    if item.price_usd < free_shipping_threshold_usd:
+        shipping_line = (
+            f"Доставка в Израиль: проверьте условия (бесплатно при заказе от "
+            f"${free_shipping_threshold_usd:.0f} на участвующие товары)"
+        )
+    elif item.free_shipping:
+        shipping_line = "Бесплатная доставка в Израиль (от $49)"
     else:
-        shipping_line = "Доставка платная"
+        shipping_line = "Доставка в Израиль: проверьте наличие бесплатной доставки на странице товара"
 
     price_line = f"Цена: <b>${item.price_usd:.2f}</b>"
     if item.old_price_usd and item.old_price_usd > item.price_usd:
