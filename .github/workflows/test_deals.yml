@@ -1,0 +1,33 @@
+name: Test Deals Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run without sending to Telegram (true/false)"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "0 */6 * * *"
+
+jobs:
+  run-test-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run bot test pipeline
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          AMAZON_PARTNER_TAG: ${{ secrets.AMAZON_PARTNER_TAG }}
+          MAX_PRICE_USD: "74.9"
+          REQUIRE_FREE_SHIPPING: "true"
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: python bot_sender.py --test
