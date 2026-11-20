@@ -1,0 +1,52 @@
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Settings:
+    bot_token: str
+    channel_id: str
+    country_code: str = "IL"
+    language: str = "ru"
+    max_price_usd: float = 74.9
+    require_free_shipping: bool = True
+    amazon_partner_tag: str = ""
+    request_timeout_sec: int = 20
+    max_items_per_run: int = 5
+    sleep_between_posts_sec: float = 1.5
+    dry_run: bool = False
+
+
+def load_settings() -> Settings:
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+
+    try:
+        max_price_usd = float(os.getenv("MAX_PRICE_USD", "74.9").strip())
+    except ValueError:
+        max_price_usd = 74.9
+
+    if max_price_usd > 74.9:
+        max_price_usd = 74.9
+
+    require_free_shipping = os.getenv("REQUIRE_FREE_SHIPPING", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    dry_run = os.getenv("DRY_RUN", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    return Settings(
+        bot_token=bot_token,
+        channel_id=channel_id,
+        max_price_usd=max_price_usd,
+        require_free_shipping=require_free_shipping,
+        amazon_partner_tag=os.getenv("AMAZON_PARTNER_TAG", "").strip(),
+        dry_run=dry_run,
+    )
