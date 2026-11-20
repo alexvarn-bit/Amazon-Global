@@ -53,10 +53,6 @@ def _normalize_input_to_url_and_asin(raw_entry: str) -> tuple[str, str]:
 
 
 def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float], bool]:
-    """
-    Возвращает (title, price_usd, is_not_found_404).
-    Если сервер вернул HTTP 404 — помечаем is_not_found_404=True, чтобы отбросить битую ссылку.
-    """
     fallback_title = f"Amazon item {asin}".strip()
     if not url:
         return fallback_title, None, False
@@ -184,7 +180,7 @@ def main() -> int:
     parser.add_argument(
         "--allow-paid-shipping",
         action="store_true",
-        help="Разрешить добавлять товары с free_shipping=false (по умолчанию добавляются только с free_shipping=true)",
+        help="Не помечать добавляемые товары как участвующие в доставке (free_shipping=False, free_shipping_49=False)",
     )
     parser.add_argument(
         "--notes",
@@ -201,7 +197,7 @@ def main() -> int:
         )
         return 1
 
-    free_shipping_val = not bool(args.allow_paid_shipping)
+    shipping_ok = not bool(args.allow_paid_shipping)
 
     existing_rows = _load_existing_json(args.output)
     seen_keys: Set[str] = set()
@@ -230,7 +226,8 @@ def main() -> int:
             "title": title,
             "price_usd": round(float(final_price), 2),
             "old_price_usd": None,
-            "free_shipping": free_shipping_val,
+            "free_shipping": shipping_ok,
+            "free_shipping_49": shipping_ok,
             "url": url,
             "asin": asin,
             "notes": args.notes.strip(),
