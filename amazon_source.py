@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlparse
 from filter_deals import DealItem
 
 POSTED_ASINS_FILE = "posted_asins.json"
+DEALS_JSON_FILE = "deals.json"
 
 _ASIN_RE = re.compile(
     r"(?:/dp/|/gp/product/|/exec/obidos/ASIN/|/o/ASIN/|/product/|asin=|/aw/d/)([A-Z0-9]{10})",
@@ -333,6 +334,78 @@ def _parse_feed_items(xml_text: str) -> List[DealItem]:
         items.append(item)
 
     return items
+
+
+def load_deals_from_json(
+    filepath: str = DEALS_JSON_FILE,
+    posted_asins: Optional[Set[str]] = None,
+) -> List[DealItem]:
+    if not os.path.exists(filepath):
+        return []
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+    except Exception as exc:
+        print(f"Warning: failed to load {filepath}: {exc}", file=sys.stderr)
+        return []
+
+    if not isinstance(raw_data, list):
+        print(f"Warning: {filepath} must contain a JSON array", file=sys.stderr)
+        return []
+
+    seen_keys: Set[str] = {k.strip().upper() for k in (posted_asins or set()) if k.strip()}
+    loaded: List[DealItem] = []
+
+    for row in raw_data:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or "").strip()
+        raw_url = str(row.get("url") or "").strip()
+        if not title or not raw_url:
+            continue
+
+        try:
+            price_usd = float(row.get("price_usd"))
+        except (TypeError, ValueError):
+            continue
+
+        old_price_val = row.get("old_price_usd")
+        old_price_usd: Optional[float] = None
+        if old_price_val is not None and old_price_val != "":
+            try:
+                parsed_old = float(old_price_val)
+                if parsed_old > 0:
+                    old_price_usd = parsed_old
+            except (TypeError, ValueError):
+                old_price_usd = None
+
+        resolved_url = _resolve_amazon_redirect(raw_url)
+        asin = str(row.get("asin") or "").strip().upper() or _extract_asin(resolved_url, title)
+        free_shipping = bool(row.get("free_shipping", False))
+        notes = str(row.get("notes") or "").strip()
+        image_url = str(row.get("image_url") or "").strip()
+
+        dedup_key = (asin or resolved_url).strip().upper()
+        if dedup_key and dedup_key in seen_keys:
+            continue
+        if dedup_key:
+            seen_keys.add(dedup_key)
+
+        item = DealItem(
+            title=title,
+            price_usd=price_usd,
+            free_shipping=free_shipping,
+            url=resolved_url,
+            asin=asin,
+            old_price_usd=old_price_usd,
+            notes=notes,
+        )
+        setattr(item, "image_url", image_url)
+        loaded.append(item)
+
+    print(f"Loaded {len(loaded)} new deals from {filepath}")
+    return loaded
 
 
 def _short_feed_label(url: str) -> str:
