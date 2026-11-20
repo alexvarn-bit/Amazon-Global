@@ -208,7 +208,7 @@ def attach_partner_tag(url: str, partner_tag: str) -> str:
 def is_valid_deal(
     item: DealItem,
     max_price_usd: float = 74.9,
-    require_free_shipping: bool = False,
+    require_free_shipping: bool = True,
     require_amazon: bool = True,
     exclude_unwanted_categories: bool = True,
 ) -> bool:
@@ -228,7 +228,7 @@ def is_valid_deal(
 def filter_deals(
     items: Iterable[DealItem],
     max_price_usd: float = 74.9,
-    require_free_shipping: bool = False,
+    require_free_shipping: bool = True,
     require_amazon: bool = True,
     exclude_unwanted_categories: bool = True,
     max_items: int = 5,
