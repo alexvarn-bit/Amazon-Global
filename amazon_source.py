@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -12,7 +13,12 @@ from filter_deals import DealItem
 
 POSTED_ASINS_FILE = "posted_asins.json"
 
-_ASIN_RE = re.compile(r"(?:/dp/|/gp/product/|/exec/obidos/ASIN/|/o/ASIN/)([A-Z0-9]{10})", re.IGNORECASE)
+_ASIN_RE = re.compile(
+    r"(?:/dp/|/gp/product/|/exec/obidos/ASIN/|/o/ASIN/|/product/|asin=|/aw/d/)([A-Z0-9]{10})",
+    re.IGNORECASE,
+)
+_HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_ANY_URL_RE = re.compile(r"""https?://[^\s<>"']+""", re.IGNORECASE)
 _PRICE_RE = re.compile(r"(?:\$|USD\s*)(\d{1,4}(?:,\d{3})*(?:\.\d{1,2})?)", re.IGNORECASE)
 _OLD_PRICE_RE = re.compile(
     r"(?:was|list(?:\s*price)?|reg(?:\.|\s*price)?|<s>|<del>)[^\d$]{0,15}\$?\s*(\d{1,4}(?:,\d{3})*(?:\.\d{1,2})?)",
@@ -50,13 +56,60 @@ def save_posted_asins(posted: Iterable[str], filepath: str = POSTED_ASINS_FILE) 
         f.write("\n")
 
 
+def _is_amazon_url(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        host = (urlparse(url.strip()).hostname or "").lower()
+    except Exception:
+        host = ""
+    return "amazon." in host or "amzn." in host
+
+
+def _unwrap_redirect_url(raw_url: str) -> str:
+    candidate = html.unescape(raw_url).strip().rstrip(".,);]}>")
+    decoded = unquote(candidate)
+    # Ищем вложенный URL Amazon внутри параметров редиректа (например ?url=... или &u=...)
+    nested_matches = _ANY_URL_RE.findall(decoded)
+    for m in nested_matches:
+        clean_m = m.rstrip(".,);]}>")
+        if _is_amazon_url(clean_m):
+            return clean_m
+    return candidate
+
+
+def _extract_amazon_url(primary_link: str, raw_text: str) -> str:
+    unescaped_text = html.unescape(raw_text)
+    candidates: List[str] = []
+
+    if primary_link:
+        candidates.append(_unwrap_redirect_url(primary_link))
+
+    for m in _HREF_RE.findall(unescaped_text):
+        candidates.append(_unwrap_redirect_url(m))
+
+    for m in _ANY_URL_RE.findall(unescaped_text):
+        candidates.append(_unwrap_redirect_url(m))
+
+    for m in _ANY_URL_RE.findall(unquote(unescaped_text)):
+        candidates.append(_unwrap_redirect_url(m))
+
+    for cand in candidates:
+        if _is_amazon_url(cand):
+            return cand
+
+    return _unwrap_redirect_url(primary_link)
+
+
 def _extract_asin(url: str, text: str) -> str:
-    for candidate in (url, unquote(url), text):
+    for candidate in (url, unquote(url), html.unescape(text), unquote(html.unescape(text))):
         if not candidate:
             continue
         match = _ASIN_RE.search(candidate)
         if match:
-            return match.group(1).upper()
+            asin = match.group(1).upper()
+            if not asin.startswith("0"):
+                return asin
     return ""
 
 
@@ -150,26 +203,27 @@ def _parse_feed_items(xml_text: str) -> List[DealItem]:
 
     for entry in entries:
         title = _child_text(entry, ("title",))
-        link = _child_text(entry, ("link", "guid", "id"))
-        if not link:
+        raw_link = _child_text(entry, ("link", "guid", "id"))
+        if not raw_link:
             for child in entry:
                 if child.tag.split("}", 1)[-1].lower() == "link":
                     href = child.attrib.get("href", "").strip()
                     if href:
-                        link = href
+                        raw_link = href
                         break
 
         description = _child_text(entry, ("description", "summary", "encoded", "content"))
-        combined_text = f"{title} {description} {link}"
+        combined_text = f"{title} {description} {raw_link}"
 
         price_usd, old_price_usd = _extract_prices(combined_text)
         if price_usd is None:
             continue
 
-        asin = _extract_asin(link, combined_text)
+        resolved_url = _extract_amazon_url(raw_link, combined_text)
+        asin = _extract_asin(resolved_url, combined_text)
         free_shipping = _detect_free_shipping(combined_text)
 
-        clean_title = re.sub(r"<[^>]+>", " ", title)
+        clean_title = html.unescape(re.sub(r"<[^>]+>", " ", title))
         clean_title = re.sub(r"\s+", " ", clean_title).strip()
 
         items.append(
@@ -177,7 +231,7 @@ def _parse_feed_items(xml_text: str) -> List[DealItem]:
                 title=clean_title,
                 price_usd=price_usd,
                 free_shipping=free_shipping,
-                url=link.strip(),
+                url=resolved_url,
                 asin=asin,
                 old_price_usd=old_price_usd,
             )
