@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -11,6 +12,16 @@ class DealItem:
     asin: str = ""
     old_price_usd: Optional[float] = None
     notes: str = ""
+
+
+def is_amazon_deal(item: DealItem) -> bool:
+    if item.asin and len(item.asin.strip()) == 10:
+        return True
+    try:
+        host = (urlparse(item.url.strip()).hostname or "").lower()
+    except Exception:
+        host = ""
+    return "amazon." in host or "amzn." in host
 
 
 def attach_partner_tag(url: str, partner_tag: str) -> str:
@@ -28,8 +39,11 @@ def is_valid_deal(
     item: DealItem,
     max_price_usd: float = 74.9,
     require_free_shipping: bool = True,
+    require_amazon: bool = True,
 ) -> bool:
     if not item.title.strip() or not item.url.strip():
+        return False
+    if require_amazon and not is_amazon_deal(item):
         return False
     if item.price_usd <= 0 or item.price_usd > max_price_usd:
         return False
@@ -42,6 +56,7 @@ def filter_deals(
     items: Iterable[DealItem],
     max_price_usd: float = 74.9,
     require_free_shipping: bool = True,
+    require_amazon: bool = True,
     max_items: int = 5,
 ) -> List[DealItem]:
     result: List[DealItem] = []
@@ -50,6 +65,7 @@ def filter_deals(
             item=item,
             max_price_usd=max_price_usd,
             require_free_shipping=require_free_shipping,
+            require_amazon=require_amazon,
         ):
             result.append(item)
             if len(result) >= max_items:
