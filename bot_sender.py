@@ -18,6 +18,7 @@ from filter_deals import (
     DealItem,
     filter_deals,
     format_deal_post_ru,
+    has_qualifying_shipping,
     is_amazon_deal,
     is_excluded_category,
 )
@@ -136,7 +137,7 @@ def _log_filter_diagnostics(
         cat_excluded = is_excluded_category(item)
         amazon_ok = is_amazon_deal(item)
         price_ok = 0 < item.price_usd <= max_price_usd
-        ship_ok = (not require_free_shipping) or item.free_shipping
+        ship_ok = has_qualifying_shipping(item, require_free_shipping=require_free_shipping)
 
         reason = ""
         if cat_excluded:
@@ -169,7 +170,7 @@ def _log_filter_diagnostics(
 
 
 def run_pipeline(settings: Settings, deals: List[DealItem], persist_posted: bool = False) -> int:
-    require_free_shipping = bool(getattr(settings, "require_free_shipping", False))
+    require_free_shipping = bool(getattr(settings, "require_free_shipping", True))
 
     valid_deals = filter_deals(
         items=deals,
