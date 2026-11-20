@@ -1,6 +1,11 @@
+import json
 import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 
@@ -104,6 +109,57 @@ _BAD_PATH_MARKERS = (
     "/s/",
 )
 
+_TRANSLATION_CACHE: Dict[str, str] = {}
+
+
+def translate_title_to_ru(title: str, timeout_sec: int = 8) -> str:
+    clean_title = re.sub(r"\s+", " ", (title or "").strip())
+    if not clean_title:
+        return ""
+    if clean_title in _TRANSLATION_CACHE:
+        return _TRANSLATION_CACHE[clean_title]
+
+    query = urllib.parse.urlencode({
+        "client": "gtx",
+        "sl": "auto",
+        "tl": "ru",
+        "dt": "t",
+        "q": clean_title,
+    })
+    url = f"https://translate.googleapis.com/translate_a/single?{query}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        parsed = json.loads(raw)
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], list):
+            parts = [
+                seg[0]
+                for seg in parsed[0]
+                if isinstance(seg, list) and seg and isinstance(seg[0], str)
+            ]
+            translated = re.sub(r"\s+", " ", "".join(parts)).strip()
+            if translated:
+                _TRANSLATION_CACHE[clean_title] = translated
+                return translated
+    except urllib.error.HTTPError as exc:
+        print(f"Translate HTTP error {exc.code}: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"Translate error: {exc}", file=sys.stderr)
+
+    _TRANSLATION_CACHE[clean_title] = clean_title
+    return clean_title
+
 
 def is_excluded_category(item: DealItem) -> bool:
     haystack = " ".join(
@@ -198,6 +254,7 @@ def format_deal_post_ru(
     free_shipping_threshold_usd: float = 49.0,
 ) -> str:
     final_url = attach_partner_tag(item.url, partner_tag)
+    ru_title = translate_title_to_ru(item.title)
 
     if item.price_usd < free_shipping_threshold_usd:
         shipping_line = (
@@ -215,7 +272,7 @@ def format_deal_post_ru(
         price_line += f" <s>${item.old_price_usd:.2f}</s> (-{discount_pct}%)"
 
     lines = [
-        f"<b>{item.title.strip()}</b>",
+        f"<b>{ru_title}</b>",
         "",
         price_line,
         shipping_line,
