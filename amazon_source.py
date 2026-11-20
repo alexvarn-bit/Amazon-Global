@@ -19,6 +19,14 @@ _ASIN_RE = re.compile(
 )
 _HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 _IMG_SRC_RE = re.compile(r"""<img[^>]+src\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_OG_IMAGE_RE = re.compile(
+    r"""<meta[^>]+(?:property|name)\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE,
+)
+_AMAZON_IMG_RE = re.compile(
+    r"""https?://m\.media-amazon\.com/images/[IP]/[^"'\\\s<>]+\.(?:jpg|jpeg|png|webp)""",
+    re.IGNORECASE,
+)
 _ANY_URL_RE = re.compile(r"""https?://[^\s<>"']+""", re.IGNORECASE)
 _PRICE_RE = re.compile(r"(?:\$|USD\s*)(\d{1,4}(?:,\d{3})*(?:\.\d{1,2})?)", re.IGNORECASE)
 _OLD_PRICE_RE = re.compile(
@@ -33,6 +41,16 @@ _PAID_SHIP_RE = re.compile(
     r"\b(?:shipping\s*:?\s*\$\s*\d+(?:\.\d{1,2})?|\$\s*\d+(?:\.\d{1,2})?\s+shipping|платная\s+доставка)\b",
     re.IGNORECASE,
 )
+
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 def load_posted_asins(filepath: str = POSTED_ASINS_FILE) -> Set[str]:
@@ -64,7 +82,7 @@ def _is_amazon_url(url: str) -> bool:
         host = (urlparse(url.strip()).hostname or "").lower()
     except Exception:
         host = ""
-    return "amazon." in host or "amzn." in host
+    return "amazon." in host or "amzn." in host or host == "a.co"
 
 
 def _unwrap_redirect_url(raw_url: str) -> str:
@@ -76,6 +94,23 @@ def _unwrap_redirect_url(raw_url: str) -> str:
         if _is_amazon_url(clean_m):
             return clean_m
     return candidate
+
+
+def _resolve_amazon_redirect(url: str, timeout_sec: int = 10) -> str:
+    clean = (url or "").strip()
+    if not clean or not _is_amazon_url(clean):
+        return clean
+    host = (urlparse(clean).hostname or "").lower()
+    if host not in {"amzn.to", "www.amzn.to", "a.co"} and "/gp/redirect" not in clean:
+        return clean
+
+    req = urllib.request.Request(clean, headers=_BROWSER_HEADERS, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            final_url = resp.geturl() or clean
+            return _unwrap_redirect_url(final_url)
+    except Exception:
+        return clean
 
 
 def _extract_amazon_url(primary_link: str, raw_text: str) -> str:
@@ -96,12 +131,44 @@ def _extract_amazon_url(primary_link: str, raw_text: str) -> str:
 
     for cand in candidates:
         if _is_amazon_url(cand):
-            return cand
+            return _resolve_amazon_redirect(cand)
 
     return _unwrap_redirect_url(primary_link)
 
 
-def _extract_image_url(entry: ET.Element, raw_description: str, asin: str = "") -> str:
+def _fetch_amazon_page_image(amazon_url: str, timeout_sec: int = 10) -> str:
+    if not amazon_url or not _is_amazon_url(amazon_url):
+        return ""
+    req = urllib.request.Request(amazon_url, headers=_BROWSER_HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw = resp.read(250_000)
+        encoding = resp.headers.get_content_charset() or "utf-8"
+        page_html = raw.decode(encoding, errors="replace")
+    except Exception:
+        return ""
+
+    og_match = _OG_IMAGE_RE.search(page_html)
+    if og_match:
+        og_url = html.unescape(og_match.group(1)).strip()
+        if og_url.startswith(("http://", "https://")) and "captcha" not in og_url.lower():
+            return og_url
+
+    img_matches = _AMAZON_IMG_RE.findall(page_html)
+    for img_url in img_matches:
+        clean_img = html.unescape(img_url).strip()
+        if "_SS40_" not in clean_img and "_US40_" not in clean_img:
+            return clean_img
+
+    return ""
+
+
+def _extract_image_url(
+    entry: ET.Element,
+    raw_description: str,
+    resolved_url: str = "",
+    asin: str = "",
+) -> str:
     for child in entry.iter():
         local = child.tag.split("}", 1)[-1].lower()
         if local in {"enclosure", "content", "thumbnail"}:
@@ -120,6 +187,10 @@ def _extract_image_url(entry: ET.Element, raw_description: str, asin: str = "") 
         img_url = img_match.group(1).strip()
         if img_url.startswith(("http://", "https://")):
             return html.unescape(img_url)
+
+    page_img = _fetch_amazon_page_image(resolved_url)
+    if page_img:
+        return page_img
 
     clean_asin = (asin or "").strip().upper()
     if len(clean_asin) == 10 and not clean_asin.startswith("0"):
@@ -181,11 +252,7 @@ def _fetch_xml(url: str, timeout_sec: int = 20) -> Optional[str]:
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": _BROWSER_HEADERS["User-Agent"],
             "Accept": "application/rss+xml, application/xml, text/xml, */*",
         },
     )
@@ -249,7 +316,7 @@ def _parse_feed_items(xml_text: str) -> List[DealItem]:
         resolved_url = _extract_amazon_url(raw_link, combined_text)
         asin = _extract_asin(resolved_url, combined_text)
         free_shipping = _detect_free_shipping(combined_text)
-        image_url = _extract_image_url(entry, description, asin=asin)
+        image_url = _extract_image_url(entry, description, resolved_url=resolved_url, asin=asin)
 
         clean_title = html.unescape(re.sub(r"<[^>]+>", " ", title))
         clean_title = re.sub(r"\s+", " ", clean_title).strip()
