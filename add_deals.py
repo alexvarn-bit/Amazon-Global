@@ -4,9 +4,9 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.request
 from typing import List, Optional, Set
-from urllib.parse import unquote
 
 from amazon_source import DEALS_JSON_FILE, _extract_asin, _resolve_amazon_redirect
 
@@ -52,9 +52,14 @@ def _normalize_input_to_url_and_asin(raw_entry: str) -> tuple[str, str]:
     return resolved, asin
 
 
-def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float]]:
+def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float], bool]:
+    """
+    Возвращает (title, price_usd, is_not_found_404).
+    Если сервер вернул HTTP 404 — помечаем is_not_found_404=True, чтобы отбросить битую ссылку.
+    """
+    fallback_title = f"Amazon item {asin}".strip()
     if not url:
-        return f"Amazon item {asin}".strip(), None
+        return fallback_title, None, False
 
     try:
         req = urllib.request.Request(url, headers=_HEADERS)
@@ -62,8 +67,12 @@ def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float]
             raw = resp.read(250_000)
         encoding = resp.headers.get_content_charset() or "utf-8"
         page = raw.decode(encoding, errors="replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return fallback_title, None, True
+        return fallback_title, None, False
     except Exception:
-        return f"Amazon item {asin}".strip(), None
+        return fallback_title, None, False
 
     title = ""
     m_title = _TITLE_TAG_RE.search(page)
@@ -78,7 +87,7 @@ def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float]
             title = re.sub(r"^Amazon\.com\s*:\s*", "", title, flags=re.I).strip()
 
     if not title:
-        title = f"Amazon item {asin}".strip()
+        title = fallback_title
 
     price: Optional[float] = None
     m_price = _PRICE_SPAN_RE.search(page)
@@ -92,7 +101,7 @@ def _scrape_basic_amazon_info(url: str, asin: str) -> tuple[str, Optional[float]
         except ValueError:
             price = None
 
-    return title, price
+    return title, price, False
 
 
 def _load_existing_json(filepath: str) -> List[dict]:
@@ -147,7 +156,7 @@ def _collect_inputs(cli_items: List[str], from_file: str) -> List[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Добавляет ссылки или ASIN с Amazon в deals.json"
+        description="Добавляет проверенные ссылки или ASIN с Amazon в deals.json"
     )
     parser.add_argument(
         "items",
@@ -173,9 +182,9 @@ def main() -> int:
         help="Цена по умолчанию, если не удалось распарсить со страницы (по умолчанию 29.99)",
     )
     parser.add_argument(
-        "--free-shipping",
+        "--allow-paid-shipping",
         action="store_true",
-        help="Пометить добавляемые товары как free_shipping: true",
+        help="Разрешить добавлять товары с free_shipping=false (по умолчанию добавляются только с free_shipping=true)",
     )
     parser.add_argument(
         "--notes",
@@ -191,6 +200,8 @@ def main() -> int:
             "Пример: python add_deals.py B09C5RG6KV https://www.amazon.com/dp/B00004OCL8 --price 34.99"
         )
         return 1
+
+    free_shipping_val = not bool(args.allow_paid_shipping)
 
     existing_rows = _load_existing_json(args.output)
     seen_keys: Set[str] = set()
@@ -208,14 +219,18 @@ def main() -> int:
             print(f"Skip duplicate or invalid: {raw}")
             continue
 
-        title, scraped_price = _scrape_basic_amazon_info(url, asin)
+        title, scraped_price, is_404 = _scrape_basic_amazon_info(url, asin)
+        if is_404:
+            print(f"Skip 404 not found: {url}")
+            continue
+
         final_price = scraped_price if scraped_price is not None else args.price
 
         new_row = {
             "title": title,
             "price_usd": round(float(final_price), 2),
             "old_price_usd": None,
-            "free_shipping": bool(args.free_shipping),
+            "free_shipping": free_shipping_val,
             "url": url,
             "asin": asin,
             "notes": args.notes.strip(),
